@@ -1,0 +1,534 @@
+---
+title: "DS 705 Project Part 3 Final Report"
+author: "Korey Bernhardt"
+date: "4/28/2020"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+---
+## Executive Summary
+
+This report will examine and recommend criteria to help determine the likelihood of loan applicants defaulting on a loan in an effort to improve accuracy and profitability of approving loans to applicants.  
+
+Twenty eight different factors that are available on loan applicants were examined, and a model was created based on their relationship to positive or negative outcomes of existing loans. The goal was to improve upon the model currently in use in both accuracy and profit, recognizing that there is a point at which improving the potential accuracy on a forecasting model may actually result in less profit.  In other words, if you decline every loan applicant you will never approve a bad loan (100% accurate), but you also won't realize any profits. 
+
+Using the model created we were able to achieve an accuracy level of between 79.05% and 74.6%, and increase in profits of between 116.74% and 253.52%.  The factors that are used to create this model include:  
+
+Factors                                    | 
+-------------------------------------------|-------------------------------------------------
+Interest rate                              | Credit limits for installment accounts
+Loan term (term)                           | 30+ day late payments in past 2 years
+Average balance per account                | Prop of revolving credit in use
+Debt to income ratio                       | Annual income verification status
+Accounts opened in past 2 years            | Credit checks in past 6 months
+Total number of credit lines               | Monthly payment amount
+Home ownership                             | Credit limits of credit cards
+Grade of loan                              |
+
+I recommended beginning using this model instead of the current one given the potential for improvement of both accuracy and profit for the bank.  This model and future results should also be reviewed on a regular basis to determine how well the model is performing, and if changes should be made.  
+  
+\pagebreak 
+
+## Introduction
+
+What factors can help determine risk and maximize profits from loans made by banks?  Using a dataset with variables such as loan amount, length of employment, home ownership, income, revolving credit in use and accounts opened in the past 2 years we'll explore what variables are most correlated to a good or bad outcome for the bank from a loan, and develop a model to improve the accuracy and profitability of loan approvals. 
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#load libraries that will be used
+library(dplyr)
+library(ggformula)
+library(tidyverse)
+library(readr)
+library("Hmisc")
+library(HH)
+library(leaps)
+library(ResourceSelection)
+library(pscl)
+
+
+#load data into csv file
+loans <- read_csv(file = 'loans50k.csv')
+
+```
+
+
+```{r echo=FALSE,eval=FALSE}
+#viewing data header and summary
+head(loans)
+```
+
+```{r echo=FALSE,eval=FALSE}
+summary(loans)
+```
+
+
+## Preparing and Cleaning the data
+
+The initial data set included 50,000 rows and 32 variables. In order to determine if a loan had a good or a bad outcome, a status field was used to interpret loans with a status of Fully Paid as good loans, and those that had a status of Charged Off as bad loans.  Data that had any other status was removed as it didn't indicate an outcome. 1 row was also removed as it had primarily invalid data (NA) for a majority of the variables.  This left 34,655 rows of data.  Four variables were also removed from the data set as they were not thought to be predictor variables.  These were the loan ID, job title, state, and total amount paid. 
+
+
+In order to determine if the variables in the data had a correlation to status, several of the variables were adjusted to be numeric and in some cases grouped together to provide more meaningful references.  Status, term, home ownership and whether income was verified were adjusted to be numeric. The following groupings were performed:
+
+- *Grade*: A and B were grouped together, C and D were grouped together, and F was it's own group. These represented a low, medium, and high risk categorization.
+
+- *Length of continuous employment*: less than 1 through 3 years were grouped together, 4 through 9 years were grouped together, and 10+ was it's own group.  These groupings were primarily based on volume of the groupings, so that it wouldn't be a larger volume of loans creating a stronger correlation.
+
+- *Reason for the loan*: There were 2 options that were significantly larger than all others combined, credit card and debt consolidation.  These 2 were left separate, and all other reasons were combined to form an "other" category.
+
+```{r echo=FALSE}
+#Initial data examination to determine potential correlations.
+loans_new <- 
+  dplyr::select(loans, -c(loanID,employment,state))%>% 
+  mutate(status = case_when(
+    status == "Fully Paid" ~ 1,
+    status == "Charged Off" | status == "Default" ~ 0,
+    TRUE ~ -1))%>%
+  mutate(grade = case_when(
+    grade == "A" | grade =="B" ~ 0,
+    grade == "C" | grade =="D" ~ 1,
+    TRUE ~ 2))%>%
+  mutate(term = case_when(
+    term == "36 months"~ 36,
+    term == "60 months" ~ 60,
+    TRUE ~ 0))%>%
+  mutate(length = case_when(
+    length == "<1 year" | length == "1 year" | length == "2 years" | length == "3 years"~ 0,
+    length == "4 years" | length == "5 years" | length == "6 years" | length == "7 years" | length == "8 years" | length == "9 years"~ 1,
+    TRUE ~ 2))%>%
+  mutate(home = case_when(
+    home == "RENT"~ 0,
+    home == "MORTGAGE" ~ 1,
+    TRUE ~ 2))%>%
+  mutate(verified = case_when(
+    verified == "Not Verified"~ 0,
+    verified == "Source Verified" ~ 1,
+    TRUE ~ 2))%>%
+  mutate(reason = case_when(
+    reason == "credit_card"~ 0,
+    reason == "debt_consolidation" ~ 1,
+    TRUE ~ 2))%>%
+  filter(status!=-1, !is.na(income))%>%
+  mutate(status_factor=as.factor(status))
+
+loans_new[is.na(loans_new)] <- 0
+
+  
+```
+
+The remaining 28 variables were each compared to status in order to determine the coefficient to help determine which would be most likely to provide a correlation to the outcome of the loan.  The top 5 correlations with status were term, rate, grade, debt to income ratio and accounts opened in the past 24 months.  The results of the analysis for these 5 variables is shown below.
+
+```{r echo=FALSE}
+#Use rcorr to determine coefficients.
+datacheck <- rcorr(as.matrix(loans_new))
+
+#function to turn results into a simpler table format
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+
+dcmatrix <-flattenCorrMatrix(datacheck$r, datacheck$P)
+dcmatrix <- 
+  dcmatrix %>% 
+  filter(column=="status_factor" | row == "status_factor")
+
+```
+
+
+```{r echo=FALSE}
+#sort absolute value of coefficent in descending order to see highest correlations
+
+dcmatrix <-
+  dplyr::select(dcmatrix, -c(p))%>%
+  rename(Variable1 = row, Variable2 = column, Coeffiecient = cor)%>%
+  top_n(5,abs(Coeffiecient)) %>%
+  arrange (desc(abs(Coeffiecient)))
+dcmatrix
+```
+
+
+```{r echo=FALSE}
+#Slim down data set
+#loans_new <- dplyr::select(loans_new, c(status, rate, accOpen24, grade, term, debtIncRat))
+```
+
+## Exploring and Transforming the data
+
+In further exploring the data,  I chose to target in on the number of accounts opened in the past 2 years and Debt to Income Ratio.  While there may be some connection between these, out of the top 5 variables the others are less independent than these.  
+
+Both of these variables, as predictors of loan status, appear to be normally distributed but have outliers and some skewing.  In order to overcome this, I converted them each to log values and square roots  to do further comparison. This didn't improve the normality of either variable.  
+
+
+
+```{r echo=FALSE,eval=FALSE}
+
+#Review stacked data.  
+
+loans_new%>%
+  gf_bar(~accOpen24,fill=~status_factor)%>%
+  gf_refine(scale_fill_manual(values = c("red","dark blue"), labels = c("Bad", "Good")))%>%
+  gf_labs(title = "Loans by Accounts Opened Past 2 Years and Status", y="# of Loans")
+
+
+loans_new%>%
+  gf_bar(~debtIncRat,fill=~status_factor)%>%
+  gf_refine(scale_fill_manual(values = c("red","dark blue"), labels = c("Bad", "Good")))%>%
+  gf_labs(title = "Loans by Debt to Income Ratio and Status", y="# of Loans")
+
+
+
+```
+
+
+```{r echo=FALSE}
+#Review boxplots, histograms and probability plots
+
+goodLoans24 <-loans_new$accOpen24[loans_new$status==1]
+badLoans24 <-loans_new$accOpen24[loans_new$status==0]
+
+#boxplot
+boxplot(accOpen24~status,data=loans_new,ylab="Accts Opened Past 2 Years",xlab="Status",main="Status by Accounts Opened")
+
+#histograms
+par(mfrow=c(1,2))
+hist(goodLoans24,main="Good Loans",xlab="Accounts Opened")
+hist(badLoans24,main="Bad Loans",xlab="Accounts Opened")
+
+#normal probability plots
+qqnorm(goodLoans24,main="Good Loans")
+qqline(goodLoans24)
+qqnorm(badLoans24,main="Bad Loans")
+qqline(badLoans24)
+
+```
+
+
+```{r echo=FALSE}
+
+goodLoansDebt <-loans_new$debtIncRat[loans_new$status==1]
+badLoansDebt <-loans_new$debtIncRat[loans_new$status==0]
+
+#boxplot
+boxplot(debtIncRat~status,data=loans_new,ylab="Debt to Income Ratio",xlab="Status",main="Status by Debt to Income Ratio")
+
+#histograms
+par(mfrow=c(1,2))
+hist(goodLoansDebt,main="Good Loans",xlab="Debt to Income Ratio")
+hist(badLoansDebt,main="Bad Loans",xlab="Debt to Income Ratio")
+
+#normal probability plots
+qqnorm(goodLoansDebt,main="Good Loans")
+qqline(goodLoansDebt)
+qqnorm(badLoansDebt,main="Bad Loans")
+qqline(badLoansDebt)
+```
+
+```{r echo=FALSE,eval=FALSE}
+loans_new<-
+  loans_new%>%
+  mutate(AO_Sqrt = sqrt(accOpen24))%>%
+  mutate(DIR_Sqrt = sqrt(debtIncRat))
+  
+
+goodLoans24 <-loans_new$AO_Sqrt[loans_new$status==1]
+badLoans24 <-loans_new$AO_Sqrt[loans_new$status==0]
+
+#boxplot
+boxplot(AO_Sqrt~status,data=loans_new,ylab="Accts Opened Past 2 Years",xlab="Status",main="Status by Accounts Opened")
+
+#histograms
+par(mfrow=c(1,2))
+hist(goodLoans24,main="Good Loans",xlab="Accounts Opened")
+hist(badLoans24,main="Bad Loans",xlab="Accounts Opened")
+
+#normal probability plots
+qqnorm(goodLoans24,main="Good Loans")
+qqline(goodLoans24)
+qqnorm(badLoans24,main="Bad Loans")
+qqline(badLoans24)
+
+```
+
+```{r eval=FALSE, echo=FALSE}
+goodLoansDebt <-loans_new$DIR_Sqrt[loans_new$status==1]
+badLoansDebt <-loans_new$DIR_Sqrt[loans_new$status==0]
+
+#boxplot
+boxplot(DIR_Sqrt~status,data=loans_new,ylab="Debt to Income Ratio",xlab="Status",main="Status by Debt to Income Ratio")
+
+#histograms
+par(mfrow=c(1,2))
+hist(goodLoansDebt,main="Good Loans",xlab="Debt to Income Ratio")
+hist(badLoansDebt,main="Bad Loans",xlab="Debt to Income Ratio")
+
+#normal probability plots
+qqnorm(goodLoansDebt,main="Good Loans")
+qqline(goodLoansDebt)
+qqnorm(badLoansDebt,main="Bad Loans")
+qqline(badLoansDebt)
+```
+
+\pagebreak 
+## The Logistic Model
+
+The target response variable for the prediction model is status.  In order to evaluate potential models, forward step, backward step and regsubsets approaches were investigated. Further model fitting included removing variables that had high collinearity and removing insignificant P-values.  Based on AIC and adjusted R2 comparisons, a model resulting from forward step creation was selected.  The variables used in this model are: rate, term , avgBal, debtIncRat, accOpen24, totalAcc, home, grade, totalLim, delinq2yr, revolRatio, verified, inq6mth, payment and totalBcLim.  
+
+Variables that were removed due to collinearity were: amount and totalRevBal. Variables removed due to insignificant P-values were: bcOpen, totalIlLim  and totalRevLim.
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#Split data - 80% training, 20% test
+loans_new2 <- dplyr::select(loans_new, -c(status_factor))
+smp_size <- floor(0.8 * nrow(loans_new2))
+set.seed(123)
+train_ind <- sample(seq_len(nrow(loans_new2)), size = smp_size)
+
+training_loans <- loans_new2[train_ind, ]
+training_loans <- dplyr::select(training_loans, -c(totalPaid))
+test_loans <- loans_new2[-train_ind, ]
+
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#Explore step backward model selection
+full_loans<-glm(status~.,data=training_loans, family="binomial")
+loans_stebback<-step(full_loans,direction="backward")
+
+loans_stebback_model<-glm(status ~ amount + term + rate + payment + grade + home + verified +
+                            debtIncRat + delinq2yr + inq6mth + openAcc + revolRatio +
+                            totalAcc + totalBal + totalRevLim + accOpen24 + avgBal +
+                            bcOpen + totalRevBal + totalBcLim + totalIlLim,data=training_loans, family="binomial")
+vif(loans_stebback_model)
+
+#Remove Colinearity
+loans_stebback_model2<-glm(status ~ term + rate + payment + grade + home + verified +
+                            debtIncRat + delinq2yr + inq6mth + openAcc + revolRatio +
+                            totalAcc + totalBal + totalRevLim + accOpen24 + avgBal +
+                            bcOpen + totalBcLim + totalIlLim,data=training_loans, family="binomial")
+vif(loans_stebback_model2)
+
+
+summary(loans_stebback_model2)
+
+
+#Remove Insignificant P-values
+loans_stebback_model3<-glm(status ~ term + rate + payment + grade + home + verified +
+                            debtIncRat + delinq2yr + inq6mth + revolRatio +
+                            totalAcc + accOpen24 + avgBal +
+                            totalBcLim + totalIlLim,data=training_loans, family="binomial")
+
+summary(loans_stebback_model3)
+
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#Explore step forward model selection
+null_loans <- glm(status~1,data=training_loans, family="binomial")
+loans_stepforward<-step(null_loans,scope=list(lower=null_loans,upper=full_loans),direction="forward")
+
+loans_stepforward_model<-glm(status ~ rate + term + avgBal + debtIncRat + accOpen24 + totalAcc +
+                               home + grade + totalLim + delinq2yr + revolRatio + verified +
+                               inq6mth + payment + amount + totalBcLim + bcOpen + totalIlLim +
+                               totalRevBal + totalRevLim,data=training_loans, family="binomial")
+vif(loans_stepforward_model)
+
+#Remove Colinearity
+loans_stepforward_model2<-glm(status ~ rate + term + avgBal + debtIncRat + accOpen24 + totalAcc +
+                               home + grade + totalLim + delinq2yr + revolRatio + verified +
+                               inq6mth + payment + totalBcLim + bcOpen + totalIlLim +
+                               totalRevLim,data=training_loans, family="binomial")
+vif(loans_stepforward_model2)
+
+summary(loans_stepforward_model2)
+
+#Remove Insignificant P-values
+loans_stepforward_model3<-glm(status ~ rate + term + avgBal + debtIncRat + accOpen24 + totalAcc +
+                               home + grade + totalLim + delinq2yr + revolRatio + verified +
+                               inq6mth + payment + totalBcLim,data=training_loans, family="binomial")
+vif(loans_stepforward_model3)
+
+summary(loans_stepforward_model3)
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#Explore regsubsets model selection
+rss_loans<-regsubsets(status~.,nvmax=28,data=training_loans)
+summary(rss_loans)$adjr2
+plot(rss_loans, scale="adjr2")
+
+rss_loans_model <- glm(status ~ accOpen24 + bcOpen + debtIncRat + delinq2yr +
+                           grade + home + inq6mth + openAcc + rate + revolRatio + term + totalAcc +
+                           totalBal + totalBcLim + totalRevLim + verified + amount + payment +
+                           avgBal + totalRevBal + totalIlLim,data=training_loans, family="binomial")
+extractAIC(rss_loans_model)
+
+vif(rss_loans_model)
+
+#Remove Colinearity
+rss_loans_model2 <- glm(status ~ accOpen24 + bcOpen + debtIncRat + delinq2yr +
+                           grade + home + inq6mth + openAcc + rate + revolRatio + term + totalAcc +
+                           totalBal + totalBcLim + totalRevLim + verified + payment +
+                           avgBal + totalIlLim,data=training_loans, family="binomial")
+vif(rss_loans_model2)
+
+summary(rss_loans_model2)
+
+#Remove Insignificant P-values
+rss_loans_model3 <- glm(status ~ accOpen24 + debtIncRat + delinq2yr +
+                           grade + home + inq6mth + rate + revolRatio + term + totalAcc +
+                           totalBcLim + verified + payment +
+                           avgBal + totalIlLim,data=training_loans, family="binomial")
+vif(rss_loans_model3)
+
+summary(rss_loans_model3)
+```
+
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#Check model selected
+#compare R2a for 3 models
+back_r2 <- pR2(loans_stebback_model3)
+back_r2[4]
+
+forward_r2 <- pR2(loans_stepforward_model3)
+forward_r2[4]
+
+forward2_r2 <- pR2(loans_stepforward_model2)
+forward2_r2[4]
+
+rss_r2 <- pR2(rss_loans_model3)
+rss_r2[4]
+
+#is the forward model 2 a good fit
+hoslem.test(training_loans$status, fitted(loans_stepforward_model3), g=5)
+hoslem.test(training_loans$status, fitted(loans_stepforward_model2), g=5)
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+#Use the model against the test data
+loans_test_model<-glm(status ~ rate + term + avgBal + debtIncRat + accOpen24 + totalAcc +
+                               home + grade + totalLim + delinq2yr + revolRatio + verified +
+                               inq6mth + payment + totalBcLim,data=test_loans, family="binomial")
+
+predprob <- predict(loans_test_model,test_loans,type="response")
+
+
+thresh <- 0.5 
+predGoodLoans <- cut(predprob, breaks=c(-Inf, thresh, Inf), labels=c("Bad Loans", "Good Loans"))
+
+cTab <- table(test_loans$status, predGoodLoans) 
+addmargins(cTab)
+
+p <- sum(diag(cTab)) / sum(cTab)  # compute the proportion of correct classifications
+print(paste('Proportion correctly predicted = ', p)) 
+
+```
+
+The final model is summarized below.  20% of the original data set containing completed loans (those that had been either fully paid or charged off) was reserved for testing the model, which resulted in 78.9% of the loan statuses being accurately predicted at a probability cutoff of 0.5.  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+summary(loans_stepforward_model3)
+
+```
+
+
+
+## Optimizing the Threshold for Accuracy
+
+In order to evaluate a probability threshold to use to improve the accuracy, the threshold was varied from 0 to 1 by increments of 0.01.  The threshold that produced the highest accuracy was 0.45, resulting in 79.05% of the loans being accurately predicted in the test data. The accuracy is fairly stable up to about a 0.75 probability where it begins to fall more quickly.  
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+x = 0
+xseq <- seq(x, 1, 0.01)
+#xseq = .6
+accuracy_df = NULL
+
+for (x in xseq) {
+threshold <- x
+predGoodLoans <- cut(predprob, breaks=c(-Inf, threshold, Inf), labels=c("Bad Loans", "Good Loans"))
+
+cTab <- table(test_loans$status, predGoodLoans) 
+proportion <- sum(diag(cTab)) / sum(cTab)  
+
+accuracy_df <- rbind(accuracy_df, data.frame(threshold,proportion))
+
+}
+
+head(accuracy_df[order(-accuracy_df$proportion),])
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+plot(accuracy_df, main = "Prediction Accuracy by Probability Threshold", xlab = "Threshold", ylab = "Proportion of Loans Accurately Predicted")
+```
+
+
+## Optimizing the Threshold for Profit
+
+In order to evaluate a probability threshold to use to improve the profit level, the threshold was again varied from 0 to 1 by increments of 0.01.  The threshold that produced the highest profit was 0.70, resulting in a profit of $3,802,714 from loans in the test data. This is quite a bit higher than the best accuracy threshold of 0.45, which would result in a profit of $2,331,409.  This threshold is also close to the point at which the accuracy of the model begins to rapidly decline. 
+
+When comparing the model to the actual outcome of the loans, the model produced a profit that was 253.52% more than the actual results that would have been produced of a profit of $1,075,686 from the test data.
+
+Alternatively, a perfect outcome of only approving loans that result in fully paid outcomes would have resulted in a profit of $12,447,264 which is 1057.15% more than the actual results based on the test data. That said, the model still produces a significantly higher profit potential than the actual approach used.   
+
+The accuracy at the 0.70 threshold used to obtain the highest profit is 74.6%, so there is some risk at that threshold that the model may not perform as well and ultimately result in less profits than we're seeing with the test data.
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+y = 0
+yseq <- seq(y, 1, 0.01)
+#yseq=.6
+test_loans <-
+  test_loans%>%
+  mutate(profit = totalPaid - amount)%>%
+  mutate(prediction = predprob)
+
+profit_df = NULL
+
+for (y in yseq) {
+threshold2 <- y
+
+profit<-  
+  test_loans%>%
+  filter(prediction > threshold2) %>% 
+  summarise(total_profit = sum(profit))
+
+profit_df <- rbind(profit_df, data.frame(threshold2,profit$total_profit))
+
+}
+
+head(profit_df[order(-profit_df$profit),])
+
+#Baseline of profit from test data
+sum(test_loans$profit)
+
+#profit if only good loans were approved
+profit_perfect <-  
+  test_loans%>%
+  filter(status == 1) %>% 
+  summarise(total_profit = sum(profit))
+
+profit_perfect
+
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+plot(profit_df, main = "Profit by Probability Threshold", xlab = "Threshold", ylab = "Profit")
+```
+
+## Results Summary
+
+After selecting a model and evaluating the results, this model does provide a significant improvement over the current approach to approving loans.  Applying a probability threshold of between 0.45 and .70 would result in an accuracy level between 79.05% and 74.6%  and an estimated increase in profits of between 116.74% and 253.52%.  Taking into consideration the declining accuracy level, using a threshold of 0.60 would result in an estimated accuracy level of 78.1% and an estimated increase in profits of 226.81%.   
